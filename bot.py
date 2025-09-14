@@ -16,12 +16,16 @@ from defunc import (
 	invite_from_usernames,
 	toggle_option,
 )
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 
 def get_api_credentials():
 	options = getoptions()
 	if not options or options[0] == "NONEID\n" or options[1] == "NONEHASH\n":
-		raise RuntimeError("API_ID/API_HASH are not configured. Run the app once and set them in settings.")
+		raise RuntimeError("API_ID/API_HASH are not configured. Set them in .env or via settings.")
 	api_id = int(options[0].replace('\n', ''))
 	api_hash = str(options[1].replace('\n', ''))
 	return api_id, api_hash
