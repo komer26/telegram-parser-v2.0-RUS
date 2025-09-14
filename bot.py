@@ -305,10 +305,13 @@ def main():
 			parse_user_id = options[2] == 'True\n'
 			parse_user_name = options[3] == 'True\n'
 			try:
+				progress = {'processed': 0, 'total': 0}
+				await event.edit(f"Старт... 0/0", buttons=[[Button.inline('Отмена', cb('SESS_SEL', s_idx))]])
 				if active:
-					res = parse_session_group_active_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently)
+					res = parse_session_group_active_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently, progress=progress)
 				else:
-					res = parse_session_group_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently)
+					res = parse_session_group_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently, progress=progress)
+				await event.edit(f"Готово: {progress.get('processed',0)}/{progress.get('total',0)}", buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
 				if isinstance(res, dict) and res.get('error') == 'invalid_index':
 					await event.edit('Неверный индекс', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
 			except Exception as exc:
@@ -404,11 +407,14 @@ def main():
 				user_states.pop(event.sender_id, None)
 				return
 			try:
-				summary = invite_from_usernames_with_summary(sessions[s_idx], api_id, api_hash, channel, limit)
+				progress = {'processed': 0, 'total': 0}
+				await event.respond('Инвайт запущен... 0/0')
+				summary = invite_from_usernames_with_summary(sessions[s_idx], api_id, api_hash, channel, limit, progress=progress)
 			except Exception as exc:
 				await event.respond(f'Ошибка инвайта: {exc}')
 				user_states.pop(event.sender_id, None)
 				return
+			await event.respond(f"Инвайт прогресс: {progress.get('processed',0)}/{progress.get('total',0)}")
 			text = (
 				f"Канал: {summary['channel']}\n"
 				f"Попыток: {summary['attempted']}\n"

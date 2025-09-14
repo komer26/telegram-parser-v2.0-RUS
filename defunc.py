@@ -114,6 +114,20 @@ def _write_env_values(updates: dict):
         f.writelines(output_lines)
 
 
+# ===== Progress helpers =====
+
+def _progress_set(progress: dict | None, **kwargs) -> None:
+    if progress is None:
+        return
+    progress.update(kwargs)
+
+
+def _progress_inc(progress: dict | None, key: str, amount: int = 1) -> None:
+    if progress is None:
+        return
+    progress[key] = progress.get(key, 0) + amount
+
+
 def config():
     """Interactive configuration that writes API_ID/API_HASH and toggles into .env."""
     while True:
@@ -349,7 +363,8 @@ def parse_session_group_filtered(session_file: str, api_id: int, api_hash: str, 
                                  parse_user_id: bool, parse_user_name: bool,
                                  exclude_admins: bool = False,
                                  last_seen_days: int | None = None,
-                                 include_recently: bool = True) -> dict:
+                                 include_recently: bool = True,
+                                 progress: dict | None = None) -> dict:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
     chats = []
     groups = []
@@ -392,13 +407,16 @@ def parse_session_group_filtered(session_file: str, api_id: int, api_hash: str, 
         summary['participants_total'] = len(participants)
         to_write_ids: list[str] = []
         to_write_names: list[str] = []
+        _progress_set(progress, total=len(participants), processed=0)
         for user in participants:
             try:
                 if exclude_admins and user.id in admin_ids:
                     summary['excluded_admins'] += 1
+                    _progress_inc(progress, 'processed')
                     continue
                 if not _user_passes_last_seen(user, last_seen_days, include_recently):
                     summary['excluded_inactive'] += 1
+                    _progress_inc(progress, 'processed')
                     continue
                 summary['matched'] += 1
                 if parse_user_id:
@@ -409,6 +427,8 @@ def parse_session_group_filtered(session_file: str, api_id: int, api_hash: str, 
                         to_write_names.append('@' + uname)
             except Exception:
                 summary['errors'] += 1
+            finally:
+                _progress_inc(progress, 'processed')
         if parse_user_id:
             before = 0
             _append_unique('userids.txt', to_write_ids)
@@ -521,7 +541,8 @@ def parse_session_group_active_filtered(session_file: str, api_id: int, api_hash
                                         exclude_admins: bool = False,
                                         last_seen_days: int | None = None,
                                         include_recently: bool = True,
-                                        message_limit: int | None = 10000) -> dict:
+                                        message_limit: int | None = 10000,
+                                        progress: dict | None = None) -> dict:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
     chats = []
     groups = []
@@ -561,8 +582,10 @@ def parse_session_group_active_filtered(session_file: str, api_id: int, api_hash
         seen_user_ids: set[int] = set()
         collected_user_ids: list[str] = []
         collected_usernames: list[str] = []
+        _progress_set(progress, total=message_limit if message_limit else 0, processed=0)
         for message in client.iter_messages(target_group, limit=message_limit):
             summary['messages_scanned'] += 1
+            _progress_inc(progress, 'processed')
             uid = getattr(message, 'sender_id', None)
             if uid is None or uid in seen_user_ids:
                 continue
@@ -623,7 +646,8 @@ def invite_from_usernames(session_file: str, api_id: int, api_hash: str, channel
 
 
 def invite_from_usernames_with_summary(session_file: str, api_id: int, api_hash: str, channel_username: str,
-                                       max_invites: int = 20) -> dict:
+                                       max_invites: int = 20,
+                                       progress: dict | None = None) -> dict:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
     with open('usernames.txt', 'r') as f:
         users = [line.strip() for line in f if line.strip()]
@@ -639,6 +663,7 @@ def invite_from_usernames_with_summary(session_file: str, api_id: int, api_hash:
         'errors': 0,
         'last_error': '',
     }
+    _progress_set(progress, total=len(users), processed=0)
     for user in users:
         try:
             inviting(client, channel_username, user)
@@ -660,6 +685,8 @@ def invite_from_usernames_with_summary(session_file: str, api_id: int, api_hash:
             summary['errors'] += 1
             summary['last_error'] = str(exc)
             break
+        finally:
+            _progress_inc(progress, 'processed')
     return summary
 
 
