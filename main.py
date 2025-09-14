@@ -63,6 +63,11 @@ if __name__ == "__main__":
                 if file.endswith('.session'):
                     sessions.append(file)
 
+            if not sessions:
+                print("Нет .session файлов. Добавьте аккаунт в настройках.")
+                time.sleep(2)
+                continue
+
 
             for i in range(len(sessions)):
                 print(f"[{i}] -", sessions[i], '\n')
@@ -95,13 +100,19 @@ if __name__ == "__main__":
                 except:
                     continue
 
+            # Ensure storage files exist
+            if not os.path.exists('usernames.txt'):
+                open('usernames.txt', 'a').close()
+            if not os.path.exists('userids.txt'):
+                open('userids.txt', 'a').close()
+
             i = 0
             print('Очистка базы юзеров: clear') 
             print('-----------------------------')
             for g in groups:
                 print(str(i) + ' - ' + g.title)
                 i+=1
-            print(str(i + 1) + ' - ' + 'Спарсить всё')
+            print(str(i) + ' - ' + 'Спарсить всё')
             g_index = input()
 
             if g_index == 'clear':
@@ -110,12 +121,12 @@ if __name__ == "__main__":
                 f = open('userids.txt', 'w')
                 f.close()
 
-            elif g_index.isdigit() and int(g_index) < i + 1:
+            elif g_index.isdigit() and int(g_index) < i:
                 target_group = groups[int(g_index)]
                 parsing(client, target_group, user_id, user_name)
                 print('Спаршено.')
 
-            elif g_index.isdigit() and int(g_index) == i + 1:
+            elif g_index.isdigit() and int(g_index) == i:
                 for g_index in groups:
                     parsing(client, g_index, user_id, user_name)
                 print('Спаршено.')
@@ -123,6 +134,8 @@ if __name__ == "__main__":
             
 
         elif selection == '3':
+            if not os.path.exists('usernames.txt'):
+                open('usernames.txt', 'a').close()
             with open('usernames.txt', 'r') as f:
                 users = list(f)
 
@@ -156,7 +169,7 @@ if __name__ == "__main__":
 
             channelname = input('Введите имя канала для инвайта (без "@")')
 
-            for limit in range(20):
+            for limit in range(min(20, len(users))):
                 try:
                     inviting(client, channelname, users[limit].replace('\n', ''))
                     print(users[limit].replace('\n', ''))
