@@ -12,6 +12,10 @@ import os
 import time
 import random
 from dotenv import load_dotenv, find_dotenv
+from datetime import datetime, timezone, timedelta
+from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
+from telethon.tl.types import ChannelParticipantsAdmins
+from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError, ChatAdminRequiredError, UserAlreadyParticipantError
 
 # Load environment variables from .env if present
 load_dotenv()
@@ -316,6 +320,125 @@ def parse_session_group(session_file: str, api_id: int, api_hash: str, group_ind
             return 'invalid_index'
 
 
+def _user_passes_last_seen(user, last_seen_days: int | None, include_recently: bool) -> bool:
+    if last_seen_days is None:
+        return True
+    status = getattr(user, 'status', None)
+    now = datetime.now(timezone.utc)
+    threshold = timedelta(days=last_seen_days)
+    if isinstance(status, UserStatusOnline):
+        return True
+    if isinstance(status, UserStatusOffline):
+        was_online = getattr(status, 'was_online', None)
+        if not was_online:
+            return False
+        if was_online.tzinfo is None:
+            was_online = was_online.replace(tzinfo=timezone.utc)
+        return (now - was_online) <= threshold
+    if isinstance(status, UserStatusRecently):
+        return include_recently
+    if isinstance(status, UserStatusLastWeek):
+        return last_seen_days >= 7
+    if isinstance(status, UserStatusLastMonth):
+        return last_seen_days >= 30
+    # Unknown status
+    return False
+
+
+def parse_session_group_filtered(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                                 parse_user_id: bool, parse_user_name: bool,
+                                 exclude_admins: bool = False,
+                                 last_seen_days: int | None = None,
+                                 include_recently: bool = True) -> dict:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> dict:
+        summary = {
+            'participants_total': 0,
+            'matched': 0,
+            'written_userids': 0,
+            'written_usernames': 0,
+            'excluded_admins': 0,
+            'excluded_inactive': 0,
+            'errors': 0,
+        }
+        admin_ids: set[int] = set()
+        if exclude_admins:
+            try:
+                admins = client.get_participants(target_group, filter=ChannelParticipantsAdmins)
+                admin_ids = {u.id for u in admins}
+            except Exception:
+                pass
+        try:
+            participants = client.get_participants(target_group)
+        except Exception:
+            participants = []
+        summary['participants_total'] = len(participants)
+        to_write_ids: list[str] = []
+        to_write_names: list[str] = []
+        for user in participants:
+            try:
+                if exclude_admins and user.id in admin_ids:
+                    summary['excluded_admins'] += 1
+                    continue
+                if not _user_passes_last_seen(user, last_seen_days, include_recently):
+                    summary['excluded_inactive'] += 1
+                    continue
+                summary['matched'] += 1
+                if parse_user_id:
+                    to_write_ids.append(str(user.id))
+                if parse_user_name and getattr(user, 'username', None):
+                    uname = user.username
+                    if ('Bot' not in uname) and ('bot' not in uname):
+                        to_write_names.append('@' + uname)
+            except Exception:
+                summary['errors'] += 1
+        if parse_user_id:
+            before = 0
+            _append_unique('userids.txt', to_write_ids)
+            summary['written_userids'] = len(to_write_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', to_write_names)
+            summary['written_usernames'] = len(to_write_names)
+        return summary
+
+    overall = {
+        'groups_processed': 0,
+        'participants_total': 0,
+        'matched': 0,
+        'written_userids': 0,
+        'written_usernames': 0,
+        'excluded_admins': 0,
+        'excluded_inactive': 0,
+        'errors': 0,
+    }
+    targets = groups if group_index is None else [groups[group_index]] if 0 <= group_index < len(groups) else []
+    if not targets:
+        return {'error': 'invalid_index'}
+    for g in targets:
+        s = collect_for_group(g)
+        overall['groups_processed'] += 1
+        for k in s:
+            overall[k] += s[k]
+    return overall
+
+
 def _append_unique(filepath: str, values: list[str]) -> None:
     """Append unique values to a file, one per line, preserving existing entries."""
     if not values:
@@ -393,20 +516,151 @@ def parse_session_group_active(session_file: str, api_id: int, api_hash: str, gr
             return 'invalid_index'
 
 
+def parse_session_group_active_filtered(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                                        parse_user_id: bool, parse_user_name: bool,
+                                        exclude_admins: bool = False,
+                                        last_seen_days: int | None = None,
+                                        include_recently: bool = True,
+                                        message_limit: int | None = 10000) -> dict:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> dict:
+        summary = {
+            'messages_scanned': 0,
+            'unique_senders': 0,
+            'matched': 0,
+            'written_userids': 0,
+            'written_usernames': 0,
+            'excluded_admins': 0,
+            'excluded_inactive': 0,
+            'errors': 0,
+        }
+        admin_ids: set[int] = set()
+        if exclude_admins:
+            try:
+                admins = client.get_participants(target_group, filter=ChannelParticipantsAdmins)
+                admin_ids = {u.id for u in admins}
+            except Exception:
+                pass
+        seen_user_ids: set[int] = set()
+        collected_user_ids: list[str] = []
+        collected_usernames: list[str] = []
+        for message in client.iter_messages(target_group, limit=message_limit):
+            summary['messages_scanned'] += 1
+            uid = getattr(message, 'sender_id', None)
+            if uid is None or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
+            summary['unique_senders'] += 1
+            try:
+                entity = client.get_entity(uid)
+                if exclude_admins and getattr(entity, 'id', None) in admin_ids:
+                    summary['excluded_admins'] += 1
+                    continue
+                if not _user_passes_last_seen(entity, last_seen_days, include_recently):
+                    summary['excluded_inactive'] += 1
+                    continue
+                summary['matched'] += 1
+                if parse_user_id:
+                    collected_user_ids.append(str(uid))
+                if parse_user_name:
+                    username = getattr(entity, 'username', None)
+                    if username and ('Bot' not in username) and ('bot' not in username):
+                        collected_usernames.append('@' + username)
+            except Exception:
+                summary['errors'] += 1
+        if parse_user_id:
+            _append_unique('userids.txt', collected_user_ids)
+            summary['written_userids'] = len(collected_user_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', collected_usernames)
+            summary['written_usernames'] = len(collected_usernames)
+        return summary
+
+    overall = {
+        'groups_processed': 0,
+        'messages_scanned': 0,
+        'unique_senders': 0,
+        'matched': 0,
+        'written_userids': 0,
+        'written_usernames': 0,
+        'excluded_admins': 0,
+        'excluded_inactive': 0,
+        'errors': 0,
+    }
+    targets = groups if group_index is None else [groups[group_index]] if 0 <= group_index < len(groups) else []
+    if not targets:
+        return {'error': 'invalid_index'}
+    for g in targets:
+        s = collect_for_group(g)
+        overall['groups_processed'] += 1
+        for k in s:
+            overall[k] += s[k]
+    return overall
+
+
 def invite_from_usernames(session_file: str, api_id: int, api_hash: str, channel_username: str,
                           max_invites: int = 20) -> int:
+    # Backward-compatible wrapper
+    summary = invite_from_usernames_with_summary(session_file, api_id, api_hash, channel_username, max_invites)
+    return summary.get('invited', 0)
+
+
+def invite_from_usernames_with_summary(session_file: str, api_id: int, api_hash: str, channel_username: str,
+                                       max_invites: int = 20) -> dict:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
     with open('usernames.txt', 'r') as f:
         users = [line.strip() for line in f if line.strip()]
-    invited = 0
-    for user in users[:max_invites]:
+    users = users[:max_invites]
+    summary = {
+        'channel': channel_username,
+        'attempted': len(users),
+        'invited': 0,
+        'skipped_privacy': 0,
+        'already_member': 0,
+        'admin_required': 0,
+        'flood_wait': 0,
+        'errors': 0,
+        'last_error': '',
+    }
+    for user in users:
         try:
             inviting(client, channel_username, user)
-            invited += 1
+            summary['invited'] += 1
             time.sleep(random.randrange(15, 40))
-        except Exception:
+        except UserPrivacyRestrictedError:
+            summary['skipped_privacy'] += 1
+            continue
+        except UserAlreadyParticipantError:
+            summary['already_member'] += 1
+            continue
+        except ChatAdminRequiredError:
+            summary['admin_required'] += 1
             break
-    return invited
+        except PeerFloodError:
+            summary['flood_wait'] += 1
+            break
+        except Exception as exc:
+            summary['errors'] += 1
+            summary['last_error'] = str(exc)
+            break
+    return summary
 
 
 def toggle_option(index: int) -> tuple[bool, list]:
