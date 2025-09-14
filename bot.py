@@ -93,7 +93,7 @@ def main():
 			[Button.inline('Настройки', cb('CFG'))],
 		]
 		text = 'Выберите действие:'
-		if event.is_reply or isinstance(event, events.CallbackQuery.Event):
+		if isinstance(event, events.CallbackQuery.Event) or getattr(event, 'is_reply', False):
 			try:
 				await event.edit(text, buttons=buttons)
 			except Exception:
