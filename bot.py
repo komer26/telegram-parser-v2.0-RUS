@@ -76,7 +76,8 @@ def main():
 		sys.exit(1)
 
 	client = TelegramClient('bot_session', api_id, api_hash)
-	client.start(bot_token=bot_token)
+	# Ensure the async start coroutine is executed before registering handlers
+	client.loop.run_until_complete(client.start(bot_token=bot_token))
 
 	# Simple in-memory state for asking text input and filters
 	user_states: dict[int, dict] = {}
@@ -135,7 +136,11 @@ def main():
 		if s_idx < 0 or s_idx >= len(sessions):
 			await event.edit('Неверный индекс сессии', buttons=[[Button.inline('Назад', cb('SESS'))]])
 			return
-		all_groups = list_groups_for_session(sessions[s_idx], api_id, api_hash)
+		try:
+			all_groups = list_groups_for_session(sessions[s_idx], api_id, api_hash)
+		except Exception as exc:
+			await event.edit(f'Ошибка получения групп: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+			return
 		per_page = 10
 		start = page * per_page
 		chunk = all_groups[start:start + per_page]
