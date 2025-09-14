@@ -13,15 +13,23 @@ from defunc import (
 	list_sessions,
 	list_groups_for_session,
 	parse_session_group,
+	parse_session_group_filtered,
+	parse_session_group_active,
+	parse_session_group_active_filtered,
 	invite_from_usernames,
+	invite_from_usernames_with_summary,
 	toggle_option,
 )
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 
 def get_api_credentials():
 	options = getoptions()
 	if not options or options[0] == "NONEID\n" or options[1] == "NONEHASH\n":
-		raise RuntimeError("API_ID/API_HASH are not configured. Run the app once and set them in settings.")
+		raise RuntimeError("API_ID/API_HASH are not configured. Set them in .env or via settings.")
 	api_id = int(options[0].replace('\n', ''))
 	api_hash = str(options[1].replace('\n', ''))
 	return api_id, api_hash
@@ -44,6 +52,7 @@ HELP_TEXT = (
 	"/sessions - список .session\n"
 	"/groups <s_idx> - группы аккаунта\n"
 	"/parse <s_idx> <g_idx|all> - парсить группу или все\n"
+	"/parse_active <s_idx> <g_idx|all> [limit] - парсить по отправителям сообщений\n"
 	"/invite <s_idx> <channel> [limit] - инвайт из usernames.txt\n"
 	"/toggle_id - вкл/выкл парсинг user-id\n"
 	"/toggle_name - вкл/выкл парсинг user-name\n"
@@ -66,7 +75,7 @@ def main():
 
 	client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
 
-	# Simple in-memory state for asking text input
+	# Simple in-memory state for asking text input and filters
 	user_states: dict[int, dict] = {}
 
 	# ===== UI helpers =====
@@ -109,6 +118,9 @@ def main():
 		buttons = [
 			[Button.inline('Группы', cb('GRP', s_idx, 0))],
 			[Button.inline('Парсить все', cb('PARSE_ALL', s_idx))],
+			[Button.inline('Парсить все (фильтр)', cb('PARSE_ALL_FILTERS', s_idx))],
+			[Button.inline('Парсить активных', cb('PARSE_ACTIVE_ALL', s_idx))],
+			[Button.inline('Парсить активных (фильтр)', cb('PARSE_ACTIVE_ALL_FILTERS', s_idx))],
 			[Button.inline('Инвайт из usernames.txt', cb('INV', s_idx))],
 			[Button.inline('Назад', cb('SESS'))],
 		]
@@ -126,7 +138,12 @@ def main():
 		rows = []
 		for idx, title, username in chunk:
 			label = f'[{idx}] {title}' if username == '-' else f'[{idx}] {title} @{username}'
-			rows.append([Button.inline(label, cb('PARSE_ONE', s_idx, idx))])
+			rows.append([
+				Button.inline(label, cb('PARSE_ONE', s_idx, idx)),
+				Button.inline('Фильтр', cb('PARSE_ONE_FILTERS', s_idx, idx)),
+				Button.inline('Активные', cb('PARSE_ACTIVE_ONE', s_idx, idx)),
+				Button.inline('Активные (фильтр)', cb('PARSE_ACTIVE_ONE_FILTERS', s_idx, idx)),
+			])
 		nav = []
 		if start > 0:
 			nav.append(Button.inline('⬅️', cb('GRP', s_idx, page - 1)))
@@ -174,6 +191,19 @@ def main():
 			except Exception as exc:
 				await event.answer('Ошибка'); await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
 			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ONE_FILTERS':
+			s_idx = int(parts[1]); g_idx = int(parts[2])
+			user_states[event.sender_id] = {'action': 'parse_filters', 's_idx': s_idx, 'g_idx': g_idx, 'active': False}
+			await event.edit('Фильтры: выберите вариант', buttons=[
+				[Button.inline('Все', cb('F_ALL'))],
+				[Button.inline('Без админов', cb('F_NOADM'))],
+				[Button.inline('Онлайн <= 7 дней', cb('F_7'))],
+				[Button.inline('Онлайн <= 14 дней', cb('F_14'))],
+				[Button.inline('Онлайн <= 30 дней', cb('F_30'))],
+				[Button.inline('Учитывать «Недавно» (вкл/выкл)', cb('F_REC'))],
+				[Button.inline('Старт', cb('F_GO'))],
+				[Button.inline('Назад', cb('SESS_SEL', s_idx))],
+			])
 		elif key == 'PARSE_ALL':
 			s_idx = int(parts[1])
 			options = getoptions()
@@ -184,6 +214,133 @@ def main():
 			except Exception as exc:
 				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
 			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ALL_FILTERS':
+			s_idx = int(parts[1])
+			user_states[event.sender_id] = {'action': 'parse_filters', 's_idx': s_idx, 'g_idx': None, 'active': False}
+			await event.edit('Фильтры: выберите вариант', buttons=[
+				[Button.inline('Все', cb('F_ALL'))],
+				[Button.inline('Без админов', cb('F_NOADM'))],
+				[Button.inline('Онлайн <= 7 дней', cb('F_7'))],
+				[Button.inline('Онлайн <= 14 дней', cb('F_14'))],
+				[Button.inline('Онлайн <= 30 дней', cb('F_30'))],
+				[Button.inline('Учитывать «Недавно» (вкл/выкл)', cb('F_REC'))],
+				[Button.inline('Старт', cb('F_GO'))],
+				[Button.inline('Назад', cb('SESS_SEL', s_idx))],
+			])
+		elif key == 'PARSE_ACTIVE_ONE':
+			s_idx = int(parts[1]); g_idx = int(parts[2])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group_active(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ACTIVE_ALL':
+			s_idx = int(parts[1])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group_active(list_sessions()[s_idx], api_id, api_hash, None, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ACTIVE_ONE_FILTERS':
+			s_idx = int(parts[1]); g_idx = int(parts[2])
+			user_states[event.sender_id] = {'action': 'parse_filters', 's_idx': s_idx, 'g_idx': g_idx, 'active': True}
+			await event.edit('Фильтры: выберите вариант', buttons=[
+				[Button.inline('Все', cb('F_ALL'))],
+				[Button.inline('Без админов', cb('F_NOADM'))],
+				[Button.inline('Онлайн <= 7 дней', cb('F_7'))],
+				[Button.inline('Онлайн <= 14 дней', cb('F_14'))],
+				[Button.inline('Онлайн <= 30 дней', cb('F_30'))],
+				[Button.inline('Учитывать «Недавно» (вкл/выкл)', cb('F_REC'))],
+				[Button.inline('Старт', cb('F_GO'))],
+				[Button.inline('Назад', cb('SESS_SEL', s_idx))],
+			])
+		elif key == 'PARSE_ACTIVE_ALL_FILTERS':
+			s_idx = int(parts[1])
+			user_states[event.sender_id] = {'action': 'parse_filters', 's_idx': s_idx, 'g_idx': None, 'active': True}
+			await event.edit('Фильтры: выберите вариант', buttons=[
+				[Button.inline('Все', cb('F_ALL'))],
+				[Button.inline('Без админов', cb('F_NOADM'))],
+				[Button.inline('Онлайн <= 7 дней', cb('F_7'))],
+				[Button.inline('Онлайн <= 14 дней', cb('F_14'))],
+				[Button.inline('Онлайн <= 30 дней', cb('F_30'))],
+				[Button.inline('Учитывать «Недавно» (вкл/выкл)', cb('F_REC'))],
+				[Button.inline('Старт', cb('F_GO'))],
+				[Button.inline('Назад', cb('SESS_SEL', s_idx))],
+			])
+		elif key in ('F_ALL','F_NOADM','F_7','F_14','F_30','F_REC','F_GO'):
+			st = user_states.get(event.sender_id, {})
+			if not st or st.get('action') != 'parse_filters':
+				await event.answer(); return
+			if key == 'F_REC':
+				st['include_recently'] = not st.get('include_recently', True)
+				user_states[event.sender_id] = st
+				await event.answer(f"Недавно: {'Да' if st['include_recently'] else 'Нет'}", alert=False)
+				return
+			if key == 'F_ALL':
+				st['exclude_admins'] = False; st['last_seen_days'] = None
+			elif key == 'F_NOADM':
+				st['exclude_admins'] = True
+			elif key == 'F_7':
+				st['last_seen_days'] = 7
+			elif key == 'F_14':
+				st['last_seen_days'] = 14
+			elif key == 'F_30':
+				st['last_seen_days'] = 30
+			user_states[event.sender_id] = st
+			if key != 'F_GO':
+				await event.answer('Фильтр применён', alert=False)
+				return
+			# GO
+			s_idx = int(st['s_idx']); g_idx = st['g_idx']; active = bool(st.get('active'))
+			exclude_admins = bool(st.get('exclude_admins', False))
+			last_seen_days = st.get('last_seen_days', None)
+			include_recently = st.get('include_recently', True)
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				progress = {'processed': 0, 'total': 0}
+				await event.edit(f"Старт... 0/0", buttons=[[Button.inline('Отмена', cb('SESS_SEL', s_idx))]])
+				if active:
+					res = parse_session_group_active_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently, progress=progress)
+				else:
+					res = parse_session_group_filtered(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name, exclude_admins, last_seen_days, include_recently, progress=progress)
+				await event.edit(f"Готово: {progress.get('processed',0)}/{progress.get('total',0)}", buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+				if isinstance(res, dict) and res.get('error') == 'invalid_index':
+					await event.edit('Неверный индекс', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			# Summarize
+			if active:
+				text = (
+					f"Групп: {res['groups_processed']}\n"
+					f"Сообщений просмотрено: {res['messages_scanned']}\n"
+					f"Уникальных отправителей: {res['unique_senders']}\n"
+					f"Подходят фильтрам: {res['matched']}\n"
+					f"user-id записано: {res['written_userids']}\n"
+					f"username записано: {res['written_usernames']}\n"
+					f"Исключено админов: {res['excluded_admins']}\n"
+					f"Исключено по неактивности: {res['excluded_inactive']}\n"
+					f"Ошибок: {res['errors']}\n"
+				)
+			else:
+				text = (
+					f"Групп: {res['groups_processed']}\n"
+					f"Участников всего: {res['participants_total']}\n"
+					f"Подходят фильтрам: {res['matched']}\n"
+					f"user-id записано: {res['written_userids']}\n"
+					f"username записано: {res['written_usernames']}\n"
+					f"Исключено админов: {res['excluded_admins']}\n"
+					f"Исключено по неактивности: {res['excluded_inactive']}\n"
+					f"Ошибок: {res['errors']}\n"
+				)
+			await event.edit(text, buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
 		elif key == 'INV':
 			s_idx = int(parts[1])
 			user_states[event.sender_id] = {'action': 'invite', 's_idx': s_idx}
@@ -250,12 +407,25 @@ def main():
 				user_states.pop(event.sender_id, None)
 				return
 			try:
-				count = invite_from_usernames(sessions[s_idx], api_id, api_hash, channel, limit)
+				progress = {'processed': 0, 'total': 0}
+				await event.respond('Инвайт запущен... 0/0')
+				summary = invite_from_usernames_with_summary(sessions[s_idx], api_id, api_hash, channel, limit, progress=progress)
 			except Exception as exc:
 				await event.respond(f'Ошибка инвайта: {exc}')
 				user_states.pop(event.sender_id, None)
 				return
-			await event.respond(f'Инвайтов отправлено: {count}')
+			await event.respond(f"Инвайт прогресс: {progress.get('processed',0)}/{progress.get('total',0)}")
+			text = (
+				f"Канал: {summary['channel']}\n"
+				f"Попыток: {summary['attempted']}\n"
+				f"Инвайтов: {summary['invited']}\n"
+				f"Уже участник: {summary['already_member']}\n"
+				f"Приватность: {summary['skipped_privacy']}\n"
+				f"Нет прав админа: {summary['admin_required']}\n"
+				f"FloodWait: {summary['flood_wait']}\n"
+				f"Ошибок: {summary['errors']} {('— ' + summary['last_error']) if summary['last_error'] else ''}"
+			)
+			await event.respond(text)
 			user_states.pop(event.sender_id, None)
 		await event.respond(HELP_TEXT)
 
@@ -353,6 +523,43 @@ def main():
 			await event.respond(f'Ошибка инвайта: {exc}')
 			return
 		await event.respond(f'Инвайтов отправлено: {count}')
+
+	@client.on(events.NewMessage(pattern=r'^/parse_active\s+(\d+)\s+(\d+|all)(?:\s+(\d+))?$'))
+	async def parse_active_handler(event):
+		if not is_allowed_user(event.sender_id):
+			return
+		parts = event.raw_text.split()
+		if len(parts) < 3:
+			await event.respond('Формат: /parse_active <s_idx> <g_idx|all> [limit]')
+			return
+		sessions = list_sessions()
+		try:
+			s_idx = int(parts[1])
+		except Exception:
+			await event.respond('Неверный индекс сессии')
+			return
+		if s_idx < 0 or s_idx >= len(sessions):
+			await event.respond('Неверный индекс сессии')
+			return
+		g_arg = parts[2]
+		group_index = None if g_arg == 'all' else int(g_arg)
+		limit = None
+		if len(parts) >= 4:
+			try:
+				limit = int(parts[3])
+			except Exception:
+				limit = None
+		options = getoptions()
+		parse_user_id = options[2] == 'True\n'
+		parse_user_name = options[3] == 'True\n'
+		try:
+			result = parse_session_group_active(
+				sessions[s_idx], api_id, api_hash, group_index, parse_user_id, parse_user_name, limit
+			)
+		except Exception as exc:
+			await event.respond(f'Ошибка парсинга: {exc}')
+			return
+		await event.respond(f'Готово: {result}')
 
 	@client.on(events.NewMessage(pattern=r'^/toggle_id$'))
 	async def toggle_id_handler(event):

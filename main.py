@@ -12,12 +12,16 @@ from defunc import inviting, parsing, config, getoptions
 import time
 import random
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 if __name__ == "__main__":
     while True:
         options = getoptions()
         if not options or options[0] == "NONEID\n" or options[1] == "NONEHASH\n":
-            print("Добавьте API_ID и API_HASH")
+            print("Добавьте API_ID и API_HASH (через .env или меню настроек)")
             time.sleep(2)
             config()
             continue

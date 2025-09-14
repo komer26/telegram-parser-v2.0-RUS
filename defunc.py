@@ -11,11 +11,28 @@ from telethon.tl.types import InputPeerEmpty
 import os
 import time
 import random
+from dotenv import load_dotenv, find_dotenv
+from datetime import datetime, timezone, timedelta
+from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
+from telethon.tl.types import ChannelParticipantsAdmins
+from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError, ChatAdminRequiredError, UserAlreadyParticipantError
+
+# Load environment variables from .env if present
+load_dotenv()
 
 def inviting(client, channel, users):
+    """Invite a user to a channel by resolving entities first."""
+    try:
+        channel_entity = client.get_entity(channel)
+    except Exception:
+        channel_entity = channel
+    try:
+        user_entity = client.get_entity(users)
+    except Exception:
+        user_entity = users
     client(InviteToChannelRequest(
-        channel=channel,
-        users=[users]
+        channel=channel_entity,
+        users=[user_entity]
     ))
 
 
@@ -44,24 +61,84 @@ def parsing(client, index: int, id: bool, name: bool):
                     f.write(str(user.id) + '\n')
 
 
+def _env_path() -> str:
+    """Locate .env file path or propose default in current working directory."""
+    located = find_dotenv(usecwd=True)
+    if located:
+        return located
+    return os.path.join(os.getcwd(), '.env')
+
+
+def _read_bool_env(var_name: str, default: bool) -> bool:
+    val = os.getenv(var_name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+def _write_env_values(updates: dict):
+    """Idempotently upsert key=value pairs into .env file."""
+    path = _env_path()
+    existing: dict[str, str] = {}
+    lines: list[str] = []
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                continue
+            k, v = stripped.split('=', 1)
+            existing[k.strip()] = v
+    existing.update({k: str(v) for k, v in updates.items()})
+    # Rebuild preserving non-assignment lines, and updating assignments
+    output_lines: list[str] = []
+    written_keys: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or '=' not in stripped:
+            output_lines.append(line)
+            continue
+        k, _ = stripped.split('=', 1)
+        k = k.strip()
+        if k in existing:
+            output_lines.append(f"{k}={existing[k]}\n")
+            written_keys.add(k)
+        else:
+            output_lines.append(line)
+    # Append any new keys
+    for k, v in existing.items():
+        if k not in written_keys:
+            output_lines.append(f"{k}={v}\n")
+    with open(path, 'w') as f:
+        f.writelines(output_lines)
+
+
+# ===== Progress helpers =====
+
+def _progress_set(progress: dict | None, **kwargs) -> None:
+    if progress is None:
+        return
+    progress.update(kwargs)
+
+
+def _progress_inc(progress: dict | None, key: str, amount: int = 1) -> None:
+    if progress is None:
+        return
+    progress[key] = progress.get(key, 0) + amount
+
+
 def config():
+    """Interactive configuration that writes API_ID/API_HASH and toggles into .env."""
     while True:
         os.system('cls||clear')
 
-        # Создаём файлы по умолчанию, если отсутствуют
-        if not os.path.exists('options.txt'):
-            with open('options.txt', 'w') as f:
-                f.write("NONEID\nNONEHASH\nTrue\nTrue\n")
+        # Ensure auxiliary files exist
         if not os.path.exists('usernames.txt'):
             open('usernames.txt', 'a').close()
         if not os.path.exists('userids.txt'):
             open('userids.txt', 'a').close()
 
-        with open('options.txt', 'r+') as f:
-            if not f.readlines():
-                f.write("NONEID\nNONEHASH\nTrue\nTrue\n")
-                continue
-                
         options = getoptions()
         sessions = []
         for file in os.listdir('.'):
@@ -73,34 +150,36 @@ def config():
                          f"3 - Парсить user-id [{options[2].replace('\n', '')}]\n"
                          f"4 - Парсить user-name [{options[3].replace('\n', '')}]\n"
                          f"5 - Добавить аккаунт юзербота [{len(sessions)}]\n"
-                          "6 - Сбросить настройки\n"
+                          "6 - Сбросить настройки (.env)\n"
                           "e - Выход\n"
                           "Ввод: ")
                     ))
 
         if key == '1':
             os.system('cls||clear')
-            options[0] = str(input("Введите API_ID: ")) + "\n"
+            new_api_id = str(input("Введите API_ID: ")).strip()
+            _write_env_values({"API_ID": new_api_id})
 
         elif key == '2':
             os.system('cls||clear')
-            options[1] = str(input("Введите API_HASH: ")) + "\n"
+            new_api_hash = str(input("Введите API_HASH: ")).strip()
+            _write_env_values({"API_HASH": new_api_hash})
 
         elif key == '3':
-            if options[2] == 'True\n':
-                options[2] = 'False\n'
-            else:
-                options[2] = 'True\n'
+            # toggle PARSE_USER_ID
+            current = _read_bool_env('PARSE_USER_ID', True)
+            _write_env_values({"PARSE_USER_ID": str(not current)})
 
         elif key == '4':
-            if options[3] == 'True\n':
-                options[3] = 'False\n'
-            else:
-                options[3] = 'True\n'
+            # toggle PARSE_USER_NAME
+            current = _read_bool_env('PARSE_USER_NAME', True)
+            _write_env_values({"PARSE_USER_NAME": str(not current)})
         
         elif key == '5':
             os.system('cls||clear')
-            if options[0] == "NONEID\n" or options[1] == "NONEHASH\n":
+            api_id_str = options[0].replace('\n', '')
+            api_hash_str = options[1].replace('\n', '')
+            if api_id_str == "NONEID" or api_hash_str == "NONEHASH":
                 print("Проверьте api_id и api_hash")
                 time.sleep(2)
                 continue
@@ -130,17 +209,17 @@ def config():
                 break
 
             phone = str(input("Введите номер телефона аккаунта: "))
-            client = TelegramClient(session_name, int(options[0].replace('\n', '')),
-                                    options[1].replace('\n', '')).start(phone)
+            client = TelegramClient(session_name, int(api_id_str), api_hash_str).start(phone)
             print(f"Создана сессия: {session_filename}")
             
         elif key == '6':
             os.system('cls||clear')
-            answer = input("Вы уверены?\nAPI_ID и API_HASH будут удалены\n"
+            answer = input("Вы уверены?\nAPI_ID и API_HASH будут удалены из .env\n"
                            "1 - Удалить\n2 - Назад\n"
                            "Ввод: ")
-            if answer == '1':    
-                options.clear()
+            if answer == '1':
+                # Remove keys by rewriting without them
+                _write_env_values({"API_ID": "", "API_HASH": ""})
                 print("Настройки очищены.")
                 time.sleep(2)
             else:
@@ -150,14 +229,40 @@ def config():
             os.system('cls||clear')
             break
 
-        with open('options.txt', 'w') as f:
-            f.writelines(options)
-
 
 def getoptions():
-    with open('options.txt', 'r') as f:
-        options = f.readlines()
-    return options
+    """Return options in legacy list format, backed by environment variables.
+
+    [0]: API_ID or "NONEID\n"
+    [1]: API_HASH or "NONEHASH\n"
+    [2]: 'True\n' or 'False\n' for PARSE_USER_ID
+    [3]: 'True\n' or 'False\n' for PARSE_USER_NAME
+    """
+    api_id = os.getenv('API_ID')
+    api_hash = os.getenv('API_HASH')
+
+    # Backward-compat: try to load from options.txt if env missing
+    if (not api_id or not api_hash) and os.path.exists('options.txt'):
+        try:
+            with open('options.txt', 'r') as f:
+                legacy = f.readlines()
+            if len(legacy) >= 2:
+                if not api_id and legacy[0].strip() and legacy[0].strip() != 'NONEID':
+                    api_id = legacy[0].strip()
+                if not api_hash and legacy[1].strip() and legacy[1].strip() != 'NONEHASH':
+                    api_hash = legacy[1].strip()
+        except Exception:
+            pass
+
+    parse_user_id = _read_bool_env('PARSE_USER_ID', True)
+    parse_user_name = _read_bool_env('PARSE_USER_NAME', True)
+
+    return [
+        f"{api_id if api_id else 'NONEID'}\n",
+        f"{api_hash if api_hash else 'NONEHASH'}\n",
+        f"{'True' if parse_user_id else 'False'}\n",
+        f"{'True' if parse_user_name else 'False'}\n",
+    ]
 
 
 # ===== Helpers for non-interactive (bot) control =====
@@ -229,30 +334,372 @@ def parse_session_group(session_file: str, api_id: int, api_hash: str, group_ind
             return 'invalid_index'
 
 
+def _user_passes_last_seen(user, last_seen_days: int | None, include_recently: bool) -> bool:
+    if last_seen_days is None:
+        return True
+    status = getattr(user, 'status', None)
+    now = datetime.now(timezone.utc)
+    threshold = timedelta(days=last_seen_days)
+    if isinstance(status, UserStatusOnline):
+        return True
+    if isinstance(status, UserStatusOffline):
+        was_online = getattr(status, 'was_online', None)
+        if not was_online:
+            return False
+        if was_online.tzinfo is None:
+            was_online = was_online.replace(tzinfo=timezone.utc)
+        return (now - was_online) <= threshold
+    if isinstance(status, UserStatusRecently):
+        return include_recently
+    if isinstance(status, UserStatusLastWeek):
+        return last_seen_days >= 7
+    if isinstance(status, UserStatusLastMonth):
+        return last_seen_days >= 30
+    # Unknown status
+    return False
+
+
+def parse_session_group_filtered(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                                 parse_user_id: bool, parse_user_name: bool,
+                                 exclude_admins: bool = False,
+                                 last_seen_days: int | None = None,
+                                 include_recently: bool = True,
+                                 progress: dict | None = None) -> dict:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> dict:
+        summary = {
+            'participants_total': 0,
+            'matched': 0,
+            'written_userids': 0,
+            'written_usernames': 0,
+            'excluded_admins': 0,
+            'excluded_inactive': 0,
+            'errors': 0,
+        }
+        admin_ids: set[int] = set()
+        if exclude_admins:
+            try:
+                admins = client.get_participants(target_group, filter=ChannelParticipantsAdmins)
+                admin_ids = {u.id for u in admins}
+            except Exception:
+                pass
+        try:
+            participants = client.get_participants(target_group)
+        except Exception:
+            participants = []
+        summary['participants_total'] = len(participants)
+        to_write_ids: list[str] = []
+        to_write_names: list[str] = []
+        _progress_set(progress, total=len(participants), processed=0)
+        for user in participants:
+            try:
+                if exclude_admins and user.id in admin_ids:
+                    summary['excluded_admins'] += 1
+                    _progress_inc(progress, 'processed')
+                    continue
+                if not _user_passes_last_seen(user, last_seen_days, include_recently):
+                    summary['excluded_inactive'] += 1
+                    _progress_inc(progress, 'processed')
+                    continue
+                summary['matched'] += 1
+                if parse_user_id:
+                    to_write_ids.append(str(user.id))
+                if parse_user_name and getattr(user, 'username', None):
+                    uname = user.username
+                    if ('Bot' not in uname) and ('bot' not in uname):
+                        to_write_names.append('@' + uname)
+            except Exception:
+                summary['errors'] += 1
+            finally:
+                _progress_inc(progress, 'processed')
+        if parse_user_id:
+            before = 0
+            _append_unique('userids.txt', to_write_ids)
+            summary['written_userids'] = len(to_write_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', to_write_names)
+            summary['written_usernames'] = len(to_write_names)
+        return summary
+
+    overall = {
+        'groups_processed': 0,
+        'participants_total': 0,
+        'matched': 0,
+        'written_userids': 0,
+        'written_usernames': 0,
+        'excluded_admins': 0,
+        'excluded_inactive': 0,
+        'errors': 0,
+    }
+    targets = groups if group_index is None else [groups[group_index]] if 0 <= group_index < len(groups) else []
+    if not targets:
+        return {'error': 'invalid_index'}
+    for g in targets:
+        s = collect_for_group(g)
+        overall['groups_processed'] += 1
+        for k in s:
+            overall[k] += s[k]
+    return overall
+
+
+def _append_unique(filepath: str, values: list[str]) -> None:
+    """Append unique values to a file, one per line, preserving existing entries."""
+    if not values:
+        return
+    existing: set[str] = set()
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            existing = {line.strip() for line in f if line.strip()}
+    new_values = [v for v in values if v and v not in existing]
+    if not new_values:
+        return
+    with open(filepath, 'a') as f:
+        for v in new_values:
+            f.write(f"{v}\n")
+
+
+def parse_session_group_active(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                               parse_user_id: bool, parse_user_name: bool, message_limit: int | None = 10000) -> str:
+    """Collect users who sent at least one message in the group by scanning messages.
+
+    message_limit: limit number of recent messages to scan per group (None = no limit; use carefully).
+    """
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> None:
+        seen_user_ids: set[int] = set()
+        collected_user_ids: list[str] = []
+        collected_usernames: list[str] = []
+        for message in client.iter_messages(target_group, limit=message_limit):
+            uid = getattr(message, 'sender_id', None)
+            if uid is None or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
+            if parse_user_id:
+                collected_user_ids.append(str(uid))
+            if parse_user_name:
+                try:
+                    entity = client.get_entity(uid)
+                    username = getattr(entity, 'username', None)
+                    if username and ('Bot' not in username) and ('bot' not in username):
+                        collected_usernames.append('@' + username)
+                except Exception:
+                    pass
+        if parse_user_id:
+            _append_unique('userids.txt', collected_user_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', collected_usernames)
+
+    if group_index is None:
+        for g in groups:
+            collect_for_group(g)
+        return 'parsed_active_all'
+    else:
+        if 0 <= group_index < len(groups):
+            target_group = groups[group_index]
+            collect_for_group(target_group)
+            return f'parsed_active_{group_index}'
+        else:
+            return 'invalid_index'
+
+
+def parse_session_group_active_filtered(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                                        parse_user_id: bool, parse_user_name: bool,
+                                        exclude_admins: bool = False,
+                                        last_seen_days: int | None = None,
+                                        include_recently: bool = True,
+                                        message_limit: int | None = 10000,
+                                        progress: dict | None = None) -> dict:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> dict:
+        summary = {
+            'messages_scanned': 0,
+            'unique_senders': 0,
+            'matched': 0,
+            'written_userids': 0,
+            'written_usernames': 0,
+            'excluded_admins': 0,
+            'excluded_inactive': 0,
+            'errors': 0,
+        }
+        admin_ids: set[int] = set()
+        if exclude_admins:
+            try:
+                admins = client.get_participants(target_group, filter=ChannelParticipantsAdmins)
+                admin_ids = {u.id for u in admins}
+            except Exception:
+                pass
+        seen_user_ids: set[int] = set()
+        collected_user_ids: list[str] = []
+        collected_usernames: list[str] = []
+        _progress_set(progress, total=message_limit if message_limit else 0, processed=0)
+        for message in client.iter_messages(target_group, limit=message_limit):
+            summary['messages_scanned'] += 1
+            _progress_inc(progress, 'processed')
+            uid = getattr(message, 'sender_id', None)
+            if uid is None or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
+            summary['unique_senders'] += 1
+            try:
+                entity = client.get_entity(uid)
+                if exclude_admins and getattr(entity, 'id', None) in admin_ids:
+                    summary['excluded_admins'] += 1
+                    continue
+                if not _user_passes_last_seen(entity, last_seen_days, include_recently):
+                    summary['excluded_inactive'] += 1
+                    continue
+                summary['matched'] += 1
+                if parse_user_id:
+                    collected_user_ids.append(str(uid))
+                if parse_user_name:
+                    username = getattr(entity, 'username', None)
+                    if username and ('Bot' not in username) and ('bot' not in username):
+                        collected_usernames.append('@' + username)
+            except Exception:
+                summary['errors'] += 1
+        if parse_user_id:
+            _append_unique('userids.txt', collected_user_ids)
+            summary['written_userids'] = len(collected_user_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', collected_usernames)
+            summary['written_usernames'] = len(collected_usernames)
+        return summary
+
+    overall = {
+        'groups_processed': 0,
+        'messages_scanned': 0,
+        'unique_senders': 0,
+        'matched': 0,
+        'written_userids': 0,
+        'written_usernames': 0,
+        'excluded_admins': 0,
+        'excluded_inactive': 0,
+        'errors': 0,
+    }
+    targets = groups if group_index is None else [groups[group_index]] if 0 <= group_index < len(groups) else []
+    if not targets:
+        return {'error': 'invalid_index'}
+    for g in targets:
+        s = collect_for_group(g)
+        overall['groups_processed'] += 1
+        for k in s:
+            overall[k] += s[k]
+    return overall
+
+
 def invite_from_usernames(session_file: str, api_id: int, api_hash: str, channel_username: str,
                           max_invites: int = 20) -> int:
+    # Backward-compatible wrapper
+    summary = invite_from_usernames_with_summary(session_file, api_id, api_hash, channel_username, max_invites)
+    return summary.get('invited', 0)
+
+
+def invite_from_usernames_with_summary(session_file: str, api_id: int, api_hash: str, channel_username: str,
+                                       max_invites: int = 20,
+                                       progress: dict | None = None) -> dict:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
     with open('usernames.txt', 'r') as f:
         users = [line.strip() for line in f if line.strip()]
-    invited = 0
-    for user in users[:max_invites]:
+    users = users[:max_invites]
+    summary = {
+        'channel': channel_username,
+        'attempted': len(users),
+        'invited': 0,
+        'skipped_privacy': 0,
+        'already_member': 0,
+        'admin_required': 0,
+        'flood_wait': 0,
+        'errors': 0,
+        'last_error': '',
+    }
+    _progress_set(progress, total=len(users), processed=0)
+    for user in users:
         try:
             inviting(client, channel_username, user)
-            invited += 1
+            summary['invited'] += 1
             time.sleep(random.randrange(15, 40))
-        except Exception:
+        except UserPrivacyRestrictedError:
+            summary['skipped_privacy'] += 1
+            continue
+        except UserAlreadyParticipantError:
+            summary['already_member'] += 1
+            continue
+        except ChatAdminRequiredError:
+            summary['admin_required'] += 1
             break
-    return invited
+        except PeerFloodError:
+            summary['flood_wait'] += 1
+            break
+        except Exception as exc:
+            summary['errors'] += 1
+            summary['last_error'] = str(exc)
+            break
+        finally:
+            _progress_inc(progress, 'processed')
+    return summary
 
 
 def toggle_option(index: int) -> tuple[bool, list]:
     options = getoptions()
     if index not in (2, 3):
         return False, options
-    if options[index] == 'True\n':
-        options[index] = 'False\n'
+    if index == 2:
+        current = _read_bool_env('PARSE_USER_ID', True)
+        _write_env_values({"PARSE_USER_ID": str(not current)})
     else:
-        options[index] = 'True\n'
-    with open('options.txt', 'w') as f:
-        f.writelines(options)
+        current = _read_bool_env('PARSE_USER_NAME', True)
+        _write_env_values({"PARSE_USER_NAME": str(not current)})
+    # Recompute options to reflect changes
+    options = getoptions()
     return True, options
