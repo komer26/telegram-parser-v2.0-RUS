@@ -17,9 +17,18 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv()
 
 def inviting(client, channel, users):
+    """Invite a user to a channel by resolving entities first."""
+    try:
+        channel_entity = client.get_entity(channel)
+    except Exception:
+        channel_entity = channel
+    try:
+        user_entity = client.get_entity(users)
+    except Exception:
+        user_entity = users
     client(InviteToChannelRequest(
-        channel=channel,
-        users=[users]
+        channel=channel_entity,
+        users=[user_entity]
     ))
 
 
