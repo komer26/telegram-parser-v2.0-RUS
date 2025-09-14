@@ -76,7 +76,7 @@ def main():
 		sys.exit(1)
 
 	client = TelegramClient('bot_session', api_id, api_hash)
-	client.loop.run_until_complete(client.start(bot_token=bot_token))
+	client.start(bot_token=bot_token)
 
 	# Simple in-memory state for asking text input and filters
 	user_states: dict[int, dict] = {}
