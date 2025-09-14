@@ -8,6 +8,7 @@ import os
 import sys
 from telethon.sync import TelegramClient
 from telethon import events, Button
+from telethon.errors.rpcerrorlist import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
 from defunc import (
 	getoptions,
 	list_sessions,
@@ -50,6 +51,7 @@ HELP_TEXT = (
 	"Команды:\n"
 	"/start - помощь\n"
 	"/sessions - список .session\n"
+	"/add_session - добавить .session через бота\n"
 	"/groups <s_idx> - группы аккаунта\n"
 	"/parse <s_idx> <g_idx|all> - парсить группу или все\n"
 	"/parse_active <s_idx> <g_idx|all> [limit] - парсить по отправителям сообщений\n"
@@ -85,6 +87,7 @@ def main():
 	async def show_main(event):
 		buttons = [
 			[Button.inline('Сессии', cb('SESS'))],
+			[Button.inline('Добавить сессию', cb('SESS_ADD'))],
 			[Button.inline('Опции', cb('OPT'))],
 			[Button.inline('Очистить юзеров', cb('CLR'))],
 			[Button.inline('Настройки', cb('CFG'))],
@@ -178,6 +181,26 @@ def main():
 		elif key == 'SESS_SEL':
 			s_idx = int(parts[1])
 			await show_session_menu(event, s_idx)
+		elif key == 'SESS_ADD':
+			# Начало мастера добавления сессии
+			user_states[event.sender_id] = {'action': 'add_session', 'step': 'ask_name', 'authorized': False}
+			await event.edit('Введите имя сессии (латиница/цифры . _ -). Можно без .session', buttons=[[Button.inline('Отмена', cb('SESS_ADD_CANCEL'))]])
+		elif key == 'SESS_ADD_CANCEL':
+			st = user_states.get(event.sender_id)
+			client2 = st.get('client') if st else None
+			if client2:
+				try:
+					client2.disconnect()
+				except Exception:
+					pass
+			session_filename = st.get('session_filename') if st else None
+			if session_filename and not st.get('authorized'):
+				try:
+					os.remove(session_filename)
+				except Exception:
+					pass
+			user_states.pop(event.sender_id, None)
+			await event.edit('Отменено', buttons=[[Button.inline('Назад', cb('MAIN'))]])
 		elif key == 'GRP':
 			s_idx = int(parts[1]); page = int(parts[2])
 			await show_groups(event, s_idx, page)
@@ -427,7 +450,79 @@ def main():
 			)
 			await event.respond(text)
 			user_states.pop(event.sender_id, None)
-		await event.respond(HELP_TEXT)
+		elif st.get('action') == 'add_session':
+			step = st.get('step', 'ask_name')
+			text = event.raw_text.strip()
+			if step == 'ask_name':
+				# Validate session name and create client
+				allowed = "._-"
+				if not text or not all(ch.isalnum() or ch in allowed for ch in text.replace('.session','')):
+					await event.respond('Имя должно содержать только буквы/цифры/._-')
+					return
+				if text.endswith('.session'):
+					session_name = text[:-8]
+					session_filename = text
+				else:
+					session_name = text
+					session_filename = text + '.session'
+				if os.path.exists(session_filename):
+					await event.respond('Такое имя уже существует. Введите другое.'); return
+				try:
+					api_id2, api_hash2 = get_api_credentials()
+					client2 = TelegramClient(session_name, api_id2, api_hash2)
+					st.update({'client': client2, 'session_filename': session_filename, 'step': 'ask_phone'})
+					user_states[event.sender_id] = st
+					await event.respond('Введите номер телефона (в международном формате):')
+				except Exception as exc:
+					await event.respond(f'Ошибка инициализации: {exc}')
+					user_states.pop(event.sender_id, None)
+			elif step == 'ask_phone':
+				st['phone'] = text
+				user_states[event.sender_id] = st
+				try:
+					st['client'].connect()
+					st['client'].send_code_request(text)
+					st['step'] = 'ask_code'
+					user_states[event.sender_id] = st
+					await event.respond('Введите код из Telegram (например, 12345):')
+				except Exception as exc:
+					await event.respond(f'Ошибка отправки кода: {exc}')
+					user_states.pop(event.sender_id, None)
+			elif step == 'ask_code':
+				code = text.replace(' ', '')
+				try:
+					st['client'].sign_in(phone=st['phone'], code=code)
+					st['authorized'] = True
+					try:
+						st['client'].disconnect()
+					except Exception:
+						pass
+					await event.respond('Сессия создана и авторизована. Готово ✅')
+					user_states.pop(event.sender_id, None)
+				except SessionPasswordNeededError:
+					st['step'] = 'ask_2fa'
+					user_states[event.sender_id] = st
+					await event.respond('Включена двухфакторная аутентификация. Введите пароль:')
+				except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+					await event.respond('Неверный или просроченный код. Повторите ввод кода:')
+				except Exception as exc:
+					await event.respond(f'Ошибка авторизации: {exc}')
+					user_states.pop(event.sender_id, None)
+			elif step == 'ask_2fa':
+				password = text
+				try:
+					st['client'].sign_in(password=password)
+					st['authorized'] = True
+					try:
+						st['client'].disconnect()
+					except Exception:
+						pass
+					await event.respond('Сессия создана и авторизована. Готово ✅')
+					user_states.pop(event.sender_id, None)
+				except Exception as exc:
+					await event.respond(f'Ошибка 2FA: {exc}')
+					user_states.pop(event.sender_id, None)
+		return
 
 	@client.on(events.NewMessage(pattern=r'^/sessions$'))
 	async def sessions_handler(event):
@@ -600,6 +695,13 @@ def main():
 			f"API_ID: {api_id_display}\nAPI_HASH: {hash_display}\n"
 			f"parse user-id: {options[2].strip()}\nparse user-name: {options[3].strip()}"
 		)
+
+	@client.on(events.NewMessage(pattern=r'^/add_session$'))
+	async def add_session_cmd(event):
+		if not is_allowed_user(event.sender_id):
+			return
+		user_states[event.sender_id] = {'action': 'add_session', 'step': 'ask_name', 'authorized': False}
+		await event.respond('Введите имя сессии (латиница/цифры . _ -). Можно без .session')
 
 	print('[bot] Бот запущен. Ожидаю команды...')
 	client.run_until_disconnected()
