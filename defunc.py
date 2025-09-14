@@ -6,8 +6,11 @@ with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.sync import TelegramClient
+from telethon.tl.functions.messages import GetDialogsRequest
+from telethon.tl.types import InputPeerEmpty
 import os
 import time
+import random
 
 def inviting(client, channel, users):
     client(InviteToChannelRequest(
@@ -134,3 +137,101 @@ def getoptions():
     with open('options.txt', 'r') as f:
         options = f.readlines()
     return options
+
+
+# ===== Helpers for non-interactive (bot) control =====
+
+def list_sessions() -> list:
+    sessions = []
+    for file in os.listdir('.'):
+        if file.endswith('.session'):
+            sessions.append(file)
+    return sessions
+
+
+def list_groups_for_session(session_file: str, api_id: int, api_hash: str):
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+    # Return lightweight data: (index, title, username or '-')
+    export = []
+    for index, chat in enumerate(groups):
+        username = getattr(chat, 'username', None)
+        export.append((index, chat.title, username if username else '-'))
+    return export
+
+
+def parse_session_group(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                        parse_user_id: bool, parse_user_name: bool) -> str:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    if group_index is None:
+        for g in groups:
+            parsing(client, g, parse_user_id, parse_user_name)
+        return 'parsed_all'
+    else:
+        if 0 <= group_index < len(groups):
+            target_group = groups[group_index]
+            parsing(client, target_group, parse_user_id, parse_user_name)
+            return f'parsed_{group_index}'
+        else:
+            return 'invalid_index'
+
+
+def invite_from_usernames(session_file: str, api_id: int, api_hash: str, channel_username: str,
+                          max_invites: int = 20) -> int:
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    with open('usernames.txt', 'r') as f:
+        users = [line.strip() for line in f if line.strip()]
+    invited = 0
+    for user in users[:max_invites]:
+        try:
+            inviting(client, channel_username, user)
+            invited += 1
+            time.sleep(random.randrange(15, 40))
+        except Exception:
+            break
+    return invited
+
+
+def toggle_option(index: int) -> tuple[bool, list]:
+    options = getoptions()
+    if index not in (2, 3):
+        return False, options
+    if options[index] == 'True\n':
+        options[index] = 'False\n'
+    else:
+        options[index] = 'True\n'
+    with open('options.txt', 'w') as f:
+        f.writelines(options)
+    return True, options
