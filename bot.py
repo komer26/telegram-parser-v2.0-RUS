@@ -6,7 +6,7 @@ with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import os
 import sys
-from telethon.sync import TelegramClient
+from telethon import TelegramClient
 from telethon import events, Button
 from telethon.errors.rpcerrorlist import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
 from defunc import (
@@ -75,7 +75,8 @@ def main():
 		print("[bot] Переменная окружения BOT_TOKEN не задана")
 		sys.exit(1)
 
-	client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
+	client = TelegramClient('bot_session', api_id, api_hash)
+	client.loop.run_until_complete(client.start(bot_token=bot_token))
 
 	# Simple in-memory state for asking text input and filters
 	user_states: dict[int, dict] = {}
@@ -190,7 +191,7 @@ def main():
 			client2 = st.get('client') if st else None
 			if client2:
 				try:
-					client2.disconnect()
+					await client2.disconnect()
 				except Exception:
 					pass
 			session_filename = st.get('session_filename') if st else None
@@ -480,8 +481,8 @@ def main():
 				st['phone'] = text
 				user_states[event.sender_id] = st
 				try:
-					st['client'].connect()
-					st['client'].send_code_request(text)
+					await st['client'].connect()
+					await st['client'].send_code_request(text)
 					st['step'] = 'ask_code'
 					user_states[event.sender_id] = st
 					await event.respond('Введите код из Telegram (например, 12345):')
@@ -491,10 +492,10 @@ def main():
 			elif step == 'ask_code':
 				code = text.replace(' ', '')
 				try:
-					st['client'].sign_in(phone=st['phone'], code=code)
+					await st['client'].sign_in(phone=st['phone'], code=code)
 					st['authorized'] = True
 					try:
-						st['client'].disconnect()
+						await st['client'].disconnect()
 					except Exception:
 						pass
 					await event.respond('Сессия создана и авторизована. Готово ✅')
@@ -511,10 +512,10 @@ def main():
 			elif step == 'ask_2fa':
 				password = text
 				try:
-					st['client'].sign_in(password=password)
+					await st['client'].sign_in(password=password)
 					st['authorized'] = True
 					try:
-						st['client'].disconnect()
+						await st['client'].disconnect()
 					except Exception:
 						pass
 					await event.respond('Сессия создана и авторизована. Готово ✅')
