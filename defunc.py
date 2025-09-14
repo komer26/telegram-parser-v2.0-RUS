@@ -109,9 +109,30 @@ def config():
             for i in sessions:
                 print(i)
 
+            # Запросить кастомное имя для .session файла
+            while True:
+                session_name = str(input("Введите имя сессии (латиница/цифры . _ -): ")).strip()
+                if not session_name:
+                    print("Имя не может быть пустым.")
+                    continue
+                allowed = "._-"
+                valid = all(ch.isalnum() or ch in allowed for ch in session_name)
+                if not valid:
+                    print("Разрешены только буквы/цифры/._- без пробелов.")
+                    continue
+                if session_name.endswith('.session'):
+                    session_filename = session_name
+                else:
+                    session_filename = session_name + '.session'
+                if os.path.exists(session_filename):
+                    print("Такое имя уже существует. Выберите другое.")
+                    continue
+                break
+
             phone = str(input("Введите номер телефона аккаунта: "))
-            client = TelegramClient(phone, int(options[0].replace('\n', '')), 
+            client = TelegramClient(session_name, int(options[0].replace('\n', '')),
                                     options[1].replace('\n', '')).start(phone)
+            print(f"Создана сессия: {session_filename}")
             
         elif key == '6':
             os.system('cls||clear')
