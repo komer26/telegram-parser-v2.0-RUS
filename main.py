@@ -73,7 +73,7 @@ if __name__ == "__main__":
                     break
                 print("Некорректный индекс. Повторите ввод.")
             
-            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash).start(sessions[i].replace('\n', ''))
+            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash).start()
 
             result = client(GetDialogsRequest(
                 offset_date=last_date,
