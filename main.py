@@ -121,11 +121,25 @@ if __name__ == "__main__":
                 if file.endswith('.session'):
                     sessions.append(file)
 
-            for i in range(len(sessions)):
-                print(f"{i} -", sessions[i])
-            i = int(input("Ввод: "))
+            if not sessions:
+                print("Нет .session файлов. Добавьте аккаунт в настройках.")
+                time.sleep(2)
+                continue
+
+            for idx in range(len(sessions)):
+                print(f"{idx} -", sessions[idx])
+
+            while True:
+                try:
+                    i = int(input("Ввод: "))
+                    if 0 <= i < len(sessions):
+                        break
+                    else:
+                        print("Некорректный индекс. Повторите ввод.")
+                except ValueError:
+                    print("Введите число.")
             
-            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash)
+            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash).start()
 
             channelname = input('Введите имя канала для инвайта (без "@")')
 
