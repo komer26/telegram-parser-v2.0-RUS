@@ -45,12 +45,18 @@ def config():
     while True:
         os.system('cls||clear')
 
+        # Создаём файлы по умолчанию, если отсутствуют
+        if not os.path.exists('options.txt'):
+            with open('options.txt', 'w') as f:
+                f.write("NONEID\nNONEHASH\nTrue\nTrue\n")
+        if not os.path.exists('usernames.txt'):
+            open('usernames.txt', 'a').close()
+        if not os.path.exists('userids.txt'):
+            open('userids.txt', 'a').close()
+
         with open('options.txt', 'r+') as f:
             if not f.readlines():
-                f.write("NONEID\n"
-                        "NONEHASH\n"
-                        "True\n"
-                        "True\n")
+                f.write("NONEID\nNONEHASH\nTrue\nTrue\n")
                 continue
                 
         options = getoptions()
@@ -63,7 +69,7 @@ def config():
                          f"2 - Обновить api_hash [{options[1].replace('\n', '')}]\n"
                          f"3 - Парсить user-id [{options[2].replace('\n', '')}]\n"
                          f"4 - Парсить user-name [{options[3].replace('\n', '')}]\n"
-                         f"5 - Добавить аккаунт юзербота[{len(sessions)}]\n"
+                         f"5 - Добавить аккаунт юзербота [{len(sessions)}]\n"
                           "6 - Сбросить настройки\n"
                           "e - Выход\n"
                           "Ввод: ")
@@ -91,7 +97,7 @@ def config():
         
         elif key == '5':
             os.system('cls||clear')
-            if options[0] == "NONEID\n" or options[1] == "NONEHASH":
+            if options[0] == "NONEID\n" or options[1] == "NONEHASH\n":
                 print("Проверьте api_id и api_hash")
                 time.sleep(2)
                 continue

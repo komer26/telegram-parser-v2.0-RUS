@@ -8,7 +8,7 @@ from telethon.sync import TelegramClient
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError
-from defunc import *
+from defunc import inviting, parsing, config, getoptions
 import time
 import random
 import os
@@ -62,7 +62,16 @@ if __name__ == "__main__":
 
             for i in range(len(sessions)):
                 print(f"[{i}] -", sessions[i], '\n')
-            i = int(input("Ввод: "))
+            while True:
+                raw = input("Ввод: ")
+                try:
+                    i = int(raw)
+                except ValueError:
+                    print("Введите число.")
+                    continue
+                if 0 <= i < len(sessions):
+                    break
+                print("Некорректный индекс. Повторите ввод.")
             
             client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash).start(sessions[i].replace('\n', ''))
 
@@ -89,20 +98,20 @@ if __name__ == "__main__":
                 print(str(i) + ' - ' + g.title)
                 i+=1
             print(str(i + 1) + ' - ' + 'Спарсить всё')
-            g_index = str(input())
+            g_index = input()
 
             if g_index == 'clear':
                 f = open('usernames.txt', 'w')
                 f.close()
                 f = open('userids.txt', 'w')
-                f.close
+                f.close()
 
-            elif int(g_index) < i + 1:
+            elif g_index.isdigit() and int(g_index) < i + 1:
                 target_group = groups[int(g_index)]
                 parsing(client, target_group, user_id, user_name)
                 print('Спаршено.')
 
-            elif int(g_index) == i + 1:
+            elif g_index.isdigit() and int(g_index) == i + 1:
                 for g_index in groups:
                     parsing(client, g_index, user_id, user_name)
                 print('Спаршено.')
@@ -121,11 +130,25 @@ if __name__ == "__main__":
                 if file.endswith('.session'):
                     sessions.append(file)
 
-            for i in range(len(sessions)):
-                print(f"{i} -", sessions[i])
-            i = int(input("Ввод: "))
+            if not sessions:
+                print("Нет .session файлов. Добавьте аккаунт в настройках.")
+                time.sleep(2)
+                continue
+
+            for idx in range(len(sessions)):
+                print(f"{idx} -", sessions[idx])
+
+            while True:
+                try:
+                    i = int(input("Ввод: "))
+                    if 0 <= i < len(sessions):
+                        break
+                    else:
+                        print("Некорректный индекс. Повторите ввод.")
+                except ValueError:
+                    print("Введите число.")
             
-            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash)
+            client = TelegramClient(sessions[i].replace('\n', ''), api_id, api_hash).start()
 
             channelname = input('Введите имя канала для инвайта (без "@")')
 
