@@ -6,7 +6,7 @@ with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import os
 import sys
-from telethon import TelegramClient
+from telethon.sync import TelegramClient
 from telethon import events, Button
 from telethon.errors.rpcerrorlist import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
 from defunc import (
@@ -76,8 +76,8 @@ def main():
 		sys.exit(1)
 
 	client = TelegramClient('bot_session', api_id, api_hash)
-	# Ensure the async start coroutine is executed before registering handlers
-	client.loop.run_until_complete(client.start(bot_token=bot_token))
+	# Start the bot in sync mode (telethon.sync)
+	client.start(bot_token=bot_token)
 
 	# Simple in-memory state for asking text input and filters
 	user_states: dict[int, dict] = {}
