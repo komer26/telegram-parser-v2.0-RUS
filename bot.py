@@ -7,7 +7,7 @@ with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import os
 import sys
 from telethon.sync import TelegramClient
-from telethon import events
+from telethon import events, Button
 from defunc import (
 	getoptions,
 	list_sessions,
@@ -66,10 +66,197 @@ def main():
 
 	client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
 
+	# Simple in-memory state for asking text input
+	user_states: dict[int, dict] = {}
+
+	# ===== UI helpers =====
+	def cb(*parts: object) -> bytes:
+		return ('|'.join(str(p) for p in parts)).encode()
+
+	async def show_main(event):
+		buttons = [
+			[Button.inline('Сессии', cb('SESS'))],
+			[Button.inline('Опции', cb('OPT'))],
+			[Button.inline('Очистить юзеров', cb('CLR'))],
+			[Button.inline('Настройки', cb('CFG'))],
+		]
+		text = 'Выберите действие:'
+		if event.is_reply or isinstance(event, events.CallbackQuery.Event):
+			try:
+				await event.edit(text, buttons=buttons)
+			except Exception:
+				await event.respond(text, buttons=buttons)
+		else:
+			await event.respond(text, buttons=buttons)
+
+	async def show_sessions(event):
+		sessions = list_sessions()
+		if not sessions:
+			await event.edit('Нет .session файлов. Добавьте их в директорию проекта.', buttons=[[Button.inline('Назад', cb('MAIN'))]])
+			return
+		rows = []
+		for idx, name in enumerate(sessions):
+			rows.append([Button.inline(f'[{idx}] {name}', cb('SESS_SEL', idx))])
+		rows.append([Button.inline('Назад', cb('MAIN'))])
+		await event.edit('Сессии:', buttons=rows)
+
+	async def show_session_menu(event, s_idx: int):
+		sessions = list_sessions()
+		if s_idx < 0 or s_idx >= len(sessions):
+			await event.edit('Неверный индекс сессии', buttons=[[Button.inline('Назад', cb('SESS'))]])
+			return
+		name = sessions[s_idx]
+		buttons = [
+			[Button.inline('Группы', cb('GRP', s_idx, 0))],
+			[Button.inline('Парсить все', cb('PARSE_ALL', s_idx))],
+			[Button.inline('Инвайт из usernames.txt', cb('INV', s_idx))],
+			[Button.inline('Назад', cb('SESS'))],
+		]
+		await event.edit(f'Сессия: {name}', buttons=buttons)
+
+	async def show_groups(event, s_idx: int, page: int = 0):
+		sessions = list_sessions()
+		if s_idx < 0 or s_idx >= len(sessions):
+			await event.edit('Неверный индекс сессии', buttons=[[Button.inline('Назад', cb('SESS'))]])
+			return
+		all_groups = list_groups_for_session(sessions[s_idx], api_id, api_hash)
+		per_page = 10
+		start = page * per_page
+		chunk = all_groups[start:start + per_page]
+		rows = []
+		for idx, title, username in chunk:
+			label = f'[{idx}] {title}' if username == '-' else f'[{idx}] {title} @{username}'
+			rows.append([Button.inline(label, cb('PARSE_ONE', s_idx, idx))])
+		nav = []
+		if start > 0:
+			nav.append(Button.inline('⬅️', cb('GRP', s_idx, page - 1)))
+		if start + per_page < len(all_groups):
+			nav.append(Button.inline('➡️', cb('GRP', s_idx, page + 1)))
+		if nav:
+			rows.append(nav)
+		rows.append([Button.inline('Назад', cb('SESS_SEL', s_idx))])
+		await event.edit('Группы:', buttons=rows)
+
 	@client.on(events.NewMessage(pattern=r'^/start$'))
 	async def start_handler(event):
 		if not is_allowed_user(event.sender_id):
 			return
+		await show_main(event)
+
+	@client.on(events.CallbackQuery)
+	async def callbacks(event):
+		if not is_allowed_user(event.sender_id):
+			await event.answer('Недоступно', alert=True)
+			return
+		try:
+			parts = event.data.decode().split('|')
+		except Exception:
+			await event.answer()
+			return
+		key = parts[0]
+		if key == 'MAIN':
+			await show_main(event)
+		elif key == 'SESS':
+			await show_sessions(event)
+		elif key == 'SESS_SEL':
+			s_idx = int(parts[1])
+			await show_session_menu(event, s_idx)
+		elif key == 'GRP':
+			s_idx = int(parts[1]); page = int(parts[2])
+			await show_groups(event, s_idx, page)
+		elif key == 'PARSE_ONE':
+			s_idx = int(parts[1]); g_idx = int(parts[2])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.answer('Ошибка'); await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ALL':
+			s_idx = int(parts[1])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group(list_sessions()[s_idx], api_id, api_hash, None, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'INV':
+			s_idx = int(parts[1])
+			user_states[event.sender_id] = {'action': 'invite', 's_idx': s_idx}
+			await event.edit('Введите канал (например, @mychannel) и опционально лимит: "@channel 20"', buttons=[[Button.inline('Отмена', cb('SESS_SEL', s_idx))]])
+		elif key == 'OPT':
+			options = getoptions()
+			b = [
+				[Button.inline(f'user-id: {options[2].strip()}', cb('TOG', 'id'))],
+				[Button.inline(f'user-name: {options[3].strip()}', cb('TOG', 'name'))],
+				[Button.inline('Назад', cb('MAIN'))],
+			]
+			await event.edit('Опции:', buttons=b)
+		elif key == 'TOG':
+			what = parts[1]
+			if what == 'id':
+				_, _opts = toggle_option(2)
+			else:
+				_, _opts = toggle_option(3)
+			b = [
+				[Button.inline(f'user-id: {_opts[2].strip()}', cb('TOG', 'id'))],
+				[Button.inline(f'user-name: {_opts[3].strip()}', cb('TOG', 'name'))],
+				[Button.inline('Назад', cb('MAIN'))],
+			]
+			await event.edit('Опции:', buttons=b)
+		elif key == 'CLR':
+			open('usernames.txt', 'w').close(); open('userids.txt', 'w').close()
+			await event.edit('Очищено usernames.txt и userids.txt', buttons=[[Button.inline('Назад', cb('MAIN'))]])
+		elif key == 'CFG':
+			options = getoptions()
+			text = (
+				f"API_ID: {options[0].strip()}\nAPI_HASH: {options[1].strip()}\n"
+				f"parse user-id: {options[2].strip()}\nparse user-name: {options[3].strip()}"
+			)
+			await event.edit(text, buttons=[[Button.inline('Назад', cb('MAIN'))]])
+		else:
+			await event.answer()
+
+	@client.on(events.NewMessage)
+	async def stateful_text_handler(event):
+		# Handle text input after button prompts (e.g., invite channel)
+		if not event.is_private:
+			return
+		if not is_allowed_user(event.sender_id):
+			return
+		st = user_states.get(event.sender_id)
+		if not st:
+			return
+		if st.get('action') == 'invite':
+			parts = event.raw_text.strip().split()
+			if not parts:
+				await event.respond('Формат: @channel [limit]')
+				return
+			channel = parts[0]
+			if channel.startswith('@'):
+				channel = channel[1:]
+			try:
+				limit = int(parts[1]) if len(parts) > 1 else 20
+			except Exception:
+				limit = 20
+			s_idx = int(st['s_idx'])
+			sessions = list_sessions()
+			if s_idx < 0 or s_idx >= len(sessions):
+				await event.respond('Неверная сессия')
+				user_states.pop(event.sender_id, None)
+				return
+			try:
+				count = invite_from_usernames(sessions[s_idx], api_id, api_hash, channel, limit)
+			except Exception as exc:
+				await event.respond(f'Ошибка инвайта: {exc}')
+				user_states.pop(event.sender_id, None)
+				return
+			await event.respond(f'Инвайтов отправлено: {count}')
+			user_states.pop(event.sender_id, None)
 		await event.respond(HELP_TEXT)
 
 	@client.on(events.NewMessage(pattern=r'^/sessions$'))
