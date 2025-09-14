@@ -13,6 +13,7 @@ from defunc import (
 	list_sessions,
 	list_groups_for_session,
 	parse_session_group,
+	parse_session_group_active,
 	invite_from_usernames,
 	toggle_option,
 )
@@ -48,6 +49,7 @@ HELP_TEXT = (
 	"/sessions - список .session\n"
 	"/groups <s_idx> - группы аккаунта\n"
 	"/parse <s_idx> <g_idx|all> - парсить группу или все\n"
+	"/parse_active <s_idx> <g_idx|all> [limit] - парсить по отправителям сообщений\n"
 	"/invite <s_idx> <channel> [limit] - инвайт из usernames.txt\n"
 	"/toggle_id - вкл/выкл парсинг user-id\n"
 	"/toggle_name - вкл/выкл парсинг user-name\n"
@@ -113,6 +115,7 @@ def main():
 		buttons = [
 			[Button.inline('Группы', cb('GRP', s_idx, 0))],
 			[Button.inline('Парсить все', cb('PARSE_ALL', s_idx))],
+			[Button.inline('Парсить активных', cb('PARSE_ACTIVE_ALL', s_idx))],
 			[Button.inline('Инвайт из usernames.txt', cb('INV', s_idx))],
 			[Button.inline('Назад', cb('SESS'))],
 		]
@@ -130,7 +133,7 @@ def main():
 		rows = []
 		for idx, title, username in chunk:
 			label = f'[{idx}] {title}' if username == '-' else f'[{idx}] {title} @{username}'
-			rows.append([Button.inline(label, cb('PARSE_ONE', s_idx, idx))])
+			rows.append([Button.inline(label, cb('PARSE_ONE', s_idx, idx)), Button.inline('Активные', cb('PARSE_ACTIVE_ONE', s_idx, idx))])
 		nav = []
 		if start > 0:
 			nav.append(Button.inline('⬅️', cb('GRP', s_idx, page - 1)))
@@ -185,6 +188,26 @@ def main():
 			parse_user_name = options[3] == 'True\n'
 			try:
 				res = parse_session_group(list_sessions()[s_idx], api_id, api_hash, None, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ACTIVE_ONE':
+			s_idx = int(parts[1]); g_idx = int(parts[2])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group_active(list_sessions()[s_idx], api_id, api_hash, g_idx, parse_user_id, parse_user_name)
+			except Exception as exc:
+				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
+			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
+		elif key == 'PARSE_ACTIVE_ALL':
+			s_idx = int(parts[1])
+			options = getoptions()
+			parse_user_id = options[2] == 'True\n'
+			parse_user_name = options[3] == 'True\n'
+			try:
+				res = parse_session_group_active(list_sessions()[s_idx], api_id, api_hash, None, parse_user_id, parse_user_name)
 			except Exception as exc:
 				await event.edit(f'Ошибка: {exc}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]]); return
 			await event.edit(f'Готово: {res}', buttons=[[Button.inline('Назад', cb('SESS_SEL', s_idx))]])
@@ -357,6 +380,43 @@ def main():
 			await event.respond(f'Ошибка инвайта: {exc}')
 			return
 		await event.respond(f'Инвайтов отправлено: {count}')
+
+	@client.on(events.NewMessage(pattern=r'^/parse_active\s+(\d+)\s+(\d+|all)(?:\s+(\d+))?$'))
+	async def parse_active_handler(event):
+		if not is_allowed_user(event.sender_id):
+			return
+		parts = event.raw_text.split()
+		if len(parts) < 3:
+			await event.respond('Формат: /parse_active <s_idx> <g_idx|all> [limit]')
+			return
+		sessions = list_sessions()
+		try:
+			s_idx = int(parts[1])
+		except Exception:
+			await event.respond('Неверный индекс сессии')
+			return
+		if s_idx < 0 or s_idx >= len(sessions):
+			await event.respond('Неверный индекс сессии')
+			return
+		g_arg = parts[2]
+		group_index = None if g_arg == 'all' else int(g_arg)
+		limit = None
+		if len(parts) >= 4:
+			try:
+				limit = int(parts[3])
+			except Exception:
+				limit = None
+		options = getoptions()
+		parse_user_id = options[2] == 'True\n'
+		parse_user_name = options[3] == 'True\n'
+		try:
+			result = parse_session_group_active(
+				sessions[s_idx], api_id, api_hash, group_index, parse_user_id, parse_user_name, limit
+			)
+		except Exception as exc:
+			await event.respond(f'Ошибка парсинга: {exc}')
+			return
+		await event.respond(f'Готово: {result}')
 
 	@client.on(events.NewMessage(pattern=r'^/toggle_id$'))
 	async def toggle_id_handler(event):

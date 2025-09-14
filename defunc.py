@@ -307,6 +307,83 @@ def parse_session_group(session_file: str, api_id: int, api_hash: str, group_ind
             return 'invalid_index'
 
 
+def _append_unique(filepath: str, values: list[str]) -> None:
+    """Append unique values to a file, one per line, preserving existing entries."""
+    if not values:
+        return
+    existing: set[str] = set()
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            existing = {line.strip() for line in f if line.strip()}
+    new_values = [v for v in values if v and v not in existing]
+    if not new_values:
+        return
+    with open(filepath, 'a') as f:
+        for v in new_values:
+            f.write(f"{v}\n")
+
+
+def parse_session_group_active(session_file: str, api_id: int, api_hash: str, group_index: int | None,
+                               parse_user_id: bool, parse_user_name: bool, message_limit: int | None = 10000) -> str:
+    """Collect users who sent at least one message in the group by scanning messages.
+
+    message_limit: limit number of recent messages to scan per group (None = no limit; use carefully).
+    """
+    client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
+    chats = []
+    groups = []
+    result = client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=200,
+        hash=0
+    ))
+    chats.extend(result.chats)
+    for chat in chats:
+        try:
+            if chat.megagroup is True:
+                groups.append(chat)
+        except:
+            continue
+
+    def collect_for_group(target_group) -> None:
+        seen_user_ids: set[int] = set()
+        collected_user_ids: list[str] = []
+        collected_usernames: list[str] = []
+        for message in client.iter_messages(target_group, limit=message_limit):
+            uid = getattr(message, 'sender_id', None)
+            if uid is None or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
+            if parse_user_id:
+                collected_user_ids.append(str(uid))
+            if parse_user_name:
+                try:
+                    entity = client.get_entity(uid)
+                    username = getattr(entity, 'username', None)
+                    if username and ('Bot' not in username) and ('bot' not in username):
+                        collected_usernames.append('@' + username)
+                except Exception:
+                    pass
+        if parse_user_id:
+            _append_unique('userids.txt', collected_user_ids)
+        if parse_user_name:
+            _append_unique('usernames.txt', collected_usernames)
+
+    if group_index is None:
+        for g in groups:
+            collect_for_group(g)
+        return 'parsed_active_all'
+    else:
+        if 0 <= group_index < len(groups):
+            target_group = groups[group_index]
+            collect_for_group(target_group)
+            return f'parsed_active_{group_index}'
+        else:
+            return 'invalid_index'
+
+
 def invite_from_usernames(session_file: str, api_id: int, api_hash: str, channel_username: str,
                           max_invites: int = 20) -> int:
     client = TelegramClient(session_file.replace('\n', ''), api_id, api_hash).start()
